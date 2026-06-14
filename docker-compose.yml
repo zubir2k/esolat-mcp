@@ -1,0 +1,11 @@
+services:
+  esolat-mcp:
+    image: esolat-mcp:latest
+    container_name: esolat-mcp
+    restart: unless-stopped
+    ports:
+      - "8626:8626"
+    environment:
+      - PORT=8626
+      - MCP_WEBHOOK_TOKEN=esolat_mcp_testing123
+      - MCP_TRANSPORT=http
