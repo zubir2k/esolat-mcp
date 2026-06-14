@@ -119,15 +119,22 @@ _"Find the nearest mosque to me." \
 _"Major Islamic events in 2026 for Malaysia." \
 "Plan my trip to Johor Bahru: prayer times + nearest mosques + Eid dates."_
 
-## License
+## Visual
+### Claude Config
+![ClaudeConfig](https://github.com/user-attachments/assets/e29e9fd0-c549-41d3-87a9-9dbde2717819)
 
-This project is licensed under the MIT License.
+### Claude Prompt
+![ClaudePrompt](https://github.com/user-attachments/assets/506e0d46-2b71-43ea-872b-f30839db36a6)
 
 ## Credits
 
 - [e-solat](https://www.e-solat.gov.my/) JAKIM - For the official prayer times
 - [WaktuSolat.app](https://waktusolat.app/) - Prayer Time by GPS
 - [Model Context Protocol](https://modelcontextprotocol.io/) - For the MCP framework
+
+## License
+
+This project is licensed under the MIT License.
 
 ## Disclaimer & Data Source
 
