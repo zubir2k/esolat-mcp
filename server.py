@@ -66,7 +66,7 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
 async def check_api_status(url: str, method: str = "GET", headers: dict = None) -> str:
     """Helper to check the live status of the upstream APIs for the dashboard."""
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             if method == "POST":
                 res = await client.post(url, data={"data": "[out:json][timeout:2];out;"}, headers=headers, timeout=2.0)
             else:
@@ -83,7 +83,7 @@ async def resolve_location(location_name: str = None, latitude: float = None, lo
     """
     if location_name:
         url = f"https://nominatim.openstreetmap.org/search?q={location_name}&format=json&limit=1"
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
             response = await client.get(url, headers=OSM_HEADERS)
             data = response.json()
             if not data:
@@ -111,7 +111,7 @@ async def get_monthly_prayer_times(location_name: str = None, latitude: float = 
 
     processed_prayers = []
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         if is_malaysia(lat, lon):
             url = f"https://api.waktusolat.app/v2/solat/gps/{lat}/{lon}?year={target_year}&month={target_month}"
             response = await client.get(url)
@@ -189,7 +189,7 @@ async def find_nearest_mosques(location_name: str = None, latitude: float = None
     lat, lon = await resolve_location(location_name, latitude, longitude)
     mosque_list = []
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         if is_malaysia(lat, lon):
             url = f"https://www.e-solat.gov.my/index.php?r=esolatApi/nearestMosque&lat={lat}&long={lon}&dist={distance_km}"
             response = await client.get(url)
@@ -252,7 +252,7 @@ async def get_yearly_islamic_events(location_name: str = None, latitude: float =
 
     event_list = []
 
-    async with httpx.AsyncClient() as client:
+    async with httpx.AsyncClient(follow_redirects=True) as client:
         if local_route:
             url = "https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all"
             response = await client.get(url)
