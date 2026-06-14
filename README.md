@@ -4,8 +4,9 @@
 ![MCP](https://img.shields.io/badge/MCP-Compatible-blue)
 ![Python](https://img.shields.io/badge/Python-3.11+-blue)
 ![Docker](https://img.shields.io/badge/Docker-Supported-blue)
+[![Buy](https://img.shields.io/badge/Belanja-Coffee-yellow.svg)](https://zubirco.de/buymecoffee)
 
-**MCP server for accurate Malaysian prayer times (official JAKIM/e-Solat), nearest mosques/suraus, and Islamic calendar events.**
+**MCP server for accurate Malaysian prayer times (official JAKIM/e-Solat), nearest masjid and surau, and Islamic calendar events.**
 
 Gives AI assistants like **Claude Desktop** and **Claude Code** reliable, hallucination-free access to Islamic worship tools with smart Malaysia-first routing.
 
@@ -41,7 +42,7 @@ The server registers three powerful tools that Claude can discover and call auto
 
 ## Quick Start
 
-### 1. Local / Stdio Mode (Recommended for Claude Desktop)
+### Option 1: Local / Stdio Mode (Recommended for Claude Desktop)
 
 **No clone needed:**
 ```bash
@@ -60,7 +61,7 @@ uvx --from git+https://github.com/zubir2k/esolat-mcp esolat-mcp
 }
 ```
 
-### 2. Docker / Remote HTTP Mode (Self-hosted)
+### Option 2: Docker / Remote HTTP Mode (Self-hosted)
 
 **1. Clone the repo and set up token:**
 ```Bash
@@ -82,7 +83,7 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 docker build -t esolat-mcp:latest .
 docker compose up -d
 ```
-**4. Endpoints**
+**5. Endpoints**
 
 **- Streamable MCP HTTP Endpoint (main one for AI clients):**
 ```
@@ -122,8 +123,19 @@ _"Major Islamic events in 2026 for Malaysia." \
 
 This project is licensed under the MIT License.
 
-## Acknowledgments
+## Credits
 
 - [e-solat](https://www.e-solat.gov.my/) JAKIM - For the official prayer times
 - [WaktuSolat.app](https://waktusolat.app/) - Prayer Time by GPS
 - [Model Context Protocol](https://modelcontextprotocol.io/) - For the MCP framework
+
+## Disclaimer & Data Source
+
+### Important Notice & Reliability Disclaimer
+This integration pulls data directly from the official **e-Solat JAKIM (Department of Islamic Development Malaysia)** portal. However, please note:
+
+- **No Liability:** This integration is a community-driven project provided "as is" without any guarantees. The maintainer is **not solely or legally responsible** for any discrepancies, inaccuracies, delays, or omissions in prayer times or calendar dates.
+- **Verify Important Times:** Users are strictly advised to regularly check and verify times against the official **[JAKIM eSolat Portal](https://www.e-solat.gov.my/)** or official local announcements, especially for critical obligations (e.g., fasting, community prayers).
+- **Network & Upstream Dependencies:** Synchronization depends on upstream API availability and local network connectivity. Discrepancies caused by unexpected server updates from JAKIM or local server downtime are outside the control of this software.
+
+*By using this tool, you acknowledge and agree that the developer holds no liability for missed schedules or data inaccuracies.*
