@@ -6,6 +6,6 @@ services:
     ports:
       - "8626:8626"
     environment:
-      - PORT=8626
-      - MCP_WEBHOOK_TOKEN=esolat_mcp_testing123
+      - PORT=${PORT:-8626}
+      - MCP_WEBHOOK_TOKEN=${MCP_WEBHOOK_TOKEN}
       - MCP_TRANSPORT=http
