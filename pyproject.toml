@@ -4,12 +4,32 @@ version = "1.0.0"
 description = "MCP server for prayer times (JAKIM/global), nearest mosque finder, and Islamic calendar events"
 readme = "README.md"
 requires-python = ">=3.11"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    { name = "Zubir Jamal" }
+]
+keywords = ["mcp", "mcp-server", "jakim", "esolat", "prayer-times", "malaysia", "islamic-calendar", "mosque"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Topic :: Religion",
+    "Topic :: Communications",
+    "Intended Audience :: Developers",
+]
 dependencies = [
     "mcp[cli]>=1.23.0,<2.0",
     "fastapi>=0.115",
     "uvicorn[standard]",
     "httpx",
 ]
+
+[project.urls]
+Homepage = "https://github.com/zubir2k/esolat-mcp"
+Repository = "https://github.com/zubir2k/esolat-mcp"
+Issues = "https://github.com/zubir2k/esolat-mcp/issues"
 
 [project.scripts]
 esolat-mcp = "server:main"
