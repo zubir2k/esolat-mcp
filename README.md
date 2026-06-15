@@ -46,16 +46,16 @@ The server registers three powerful tools that Claude can discover and call auto
 
 **No clone needed:**
 ```bash
-uvx --from git+https://github.com/zubir2k/esolat-mcp esolat-mcp
+uvx esolat-mcp
 ```
 
 **Claude Desktop config example:**
 ```JSON
 {
   "mcpServers": {
-    "esolat": {
+     "esolat": {
       "command": "uvx",
-      "args": ["--from", "git+https://github.com/zubir2k/esolat-mcp", "esolat-mcp"]
+      "args": ["esolat-mcp"]
     }
   }
 }
@@ -121,10 +121,11 @@ _"Major Islamic events in 2026 for Malaysia." \
 
 ## Visual
 ### Claude Config
-![ClaudeConfig](https://github.com/user-attachments/assets/e29e9fd0-c549-41d3-87a9-9dbde2717819)
+![Config](https://github.com/user-attachments/assets/5cdca516-0b5d-4782-85e0-2c1ee0360b6a)
 
 ### Claude Prompt
-![ClaudePrompt](https://github.com/user-attachments/assets/506e0d46-2b71-43ea-872b-f30839db36a6)
+![Prompt](https://github.com/user-attachments/assets/387213a0-6dc4-4c0e-a3ad-339277019255)
+
 
 ## Credits
 
