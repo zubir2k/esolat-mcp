@@ -31,7 +31,7 @@ The server registers three powerful tools that Claude can discover and call auto
    - Returns both Gregorian and Hijri dates
 
 2. **`find_nearest_mosques`**
-   - Find up to 15 nearest mosques/suraus
+   - Find up to 15 nearest masjid/surau
    - Default radius: 5 km (configurable)
    - Malaysia uses official e-Solat data; global uses OpenStreetMap
    - Includes distance, coordinates, Google Maps & Waze links
