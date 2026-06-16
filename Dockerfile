@@ -8,7 +8,8 @@ RUN pip install --no-cache-dir \
     "mcp[cli]>=1.23.0,<2.0" \
     "fastapi>=0.115" \
     "uvicorn[standard]" \
-    httpx
+    httpx \
+    "cachetools>=5.0"
 
 COPY server.py .
 
