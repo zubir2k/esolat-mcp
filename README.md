@@ -1,4 +1,4 @@
-![eSolatMCP](https://github.com/user-attachments/assets/622ae01a-4437-4dab-aec0-8e92d77e6b55)
+![eSolatMCP](https://github.com/user-attachments/assets/0ad3b631-1f0d-4906-9e9e-442a009ff89e)
 
 [![GitHub Repo stars](https://img.shields.io/github/stars/zubir2k/esolat-mcp?style=social)](https://github.com/zubir2k/esolat-mcp/stargazers)
 ![MCP](https://img.shields.io/badge/MCP-Compatible-blue)
