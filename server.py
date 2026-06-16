@@ -16,21 +16,24 @@ except ImportError:
 
 # ==================== CONFIGURATION ====================
 
+CURRENT_VERSION = "1.0.1"
+PYPI_PACKAGE_NAME = "esolat-mcp"
 WEBHOOK_TOKEN = os.environ.get("MCP_WEBHOOK_TOKEN", "esolat_secure_token")
 PORT = int(os.environ.get("PORT", "8626"))
 TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").lower()
 
 # ==================== CACHES ====================
-# FIX #4 & #6: In-memory TTL caches to protect OSM rate limits and reduce API hammering.
 # Nominatim geocoding: 24-hour TTL, max 256 unique location strings.
 _geocode_cache: TTLCache = TTLCache(maxsize=256, ttl=86400)
 
 # Prayer times: 1-hour TTL, keyed by (lat, lon, year, month).
-# Monthly data rarely changes; 1hr is conservative and safe.
 _prayer_cache: TTLCache = TTLCache(maxsize=128, ttl=3600)
 
 # Islamic events: 24-hour TTL, keyed by (route, year).
 _events_cache: TTLCache = TTLCache(maxsize=64, ttl=86400)
+
+# PyPI version check: 1-hour TTL to avoid hammering PyPI on every dashboard load.
+_pypi_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)
 
 # ==================== MCP INIT ====================
 
@@ -84,16 +87,38 @@ async def check_api_status(url: str, method: str = "GET", headers: dict = None) 
     except Exception:
         return "UNREACHABLE"
 
+async def check_pypi_version() -> tuple[str, bool]:
+    """
+    Checks PyPI for the latest published version of esolat-mcp.
+    Returns (latest_version, update_available) tuple.
+    Cached for 1 hour to avoid hammering PyPI on every dashboard load.
+    """
+    cache_key = "pypi_version"
+    if cache_key in _pypi_cache:
+        return _pypi_cache[cache_key]
+    try:
+        async with httpx.AsyncClient(follow_redirects=True) as client:
+            response = await client.get(
+                f"https://pypi.org/pypi/{PYPI_PACKAGE_NAME}/json",
+                timeout=5.0
+            )
+            if response.status_code == 200:
+                latest = response.json()["info"]["version"]
+                update_available = latest != CURRENT_VERSION
+                result = (latest, update_available)
+                _pypi_cache[cache_key] = result
+                return result
+    except Exception:
+        pass
+    # If PyPI is unreachable, return current version with no update flag
+    return (CURRENT_VERSION, False)
+
 async def resolve_location(location_name: str = None, latitude: float = None, longitude: float = None):
     """
     Internal Location Resolver Core.
     If text string is supplied, converts it via OpenStreetMap Nominatim proxy (cached 24hr).
     If raw GPS coordinates are supplied, returns them directly.
-
-    FIX #2: Returns error dict instead of raising HTTPException so stdio transport
-            can surface a readable message to the LLM rather than crashing the tool call.
-    FIX #4: Results cached in _geocode_cache to prevent OSM rate-limit bans on
-            concurrent or repeat LLM calls for the same location string.
+    Returns error dict on failure so stdio transport surfaces a readable message to the LLM.
     """
     if location_name:
         cache_key = location_name.strip().lower()
@@ -105,7 +130,7 @@ async def resolve_location(location_name: str = None, latitude: float = None, lo
                 response = await client.get(url, headers=OSM_HEADERS, timeout=10.0)
                 data = response.json()
         except httpx.RequestError:
-            return {"error": f"Location lookup failed: could not reach OpenStreetMap. Try again later."}
+            return {"error": "Location lookup failed: could not reach OpenStreetMap. Try again later."}
         if not data:
             return {"error": f"Location '{location_name}' could not be resolved. Try a different name or use coordinates."}
         result = (float(data[0]["lat"]), float(data[0]["lon"]))
@@ -133,7 +158,6 @@ async def get_monthly_prayer_times(
     Use this tool whenever the user asks for today's prayer times, this week's schedule,
     or a specific month's prayer schedule.
     """
-    # FIX #2: resolve_location now returns error dict on failure instead of raising
     location = await resolve_location(location_name, latitude, longitude)
     if isinstance(location, dict):
         return location
@@ -143,7 +167,6 @@ async def get_monthly_prayer_times(
     target_month = month or current_date.month
     target_year = year or current_date.year
 
-    # FIX #6: Cache prayer times by coordinates + month/year (1hr TTL)
     cache_key = (round(lat, 4), round(lon, 4), target_year, target_month)
     if cache_key in _prayer_cache:
         return _prayer_cache[cache_key]
@@ -156,7 +179,6 @@ async def get_monthly_prayer_times(
                 url = f"https://api.waktusolat.app/v2/solat/gps/{lat}/{lon}?year={target_year}&month={target_month}"
                 response = await client.get(url, timeout=15.0)
                 if response.status_code != 200:
-                    # FIX #2: return structured error instead of raise HTTPException
                     return {"error": "The Malaysian prayer time API (WaktuSolat) is currently unreachable. Please try again later."}
                 raw_data = response.json()
                 for day_entry in raw_data.get("prayers", []):
@@ -227,7 +249,6 @@ async def find_nearest_mosques(
     Finds verified mosques, masjids, or suraus within a target search radius.
     Injects map routing navigation strings for Google Maps and native Waze applications.
     """
-    # FIX #2: resolve_location now returns error dict on failure
     location = await resolve_location(location_name, latitude, longitude)
     if isinstance(location, dict):
         return location
@@ -267,8 +288,6 @@ out body center;
                 if response.status_code == 200:
                     raw_data = response.json()
                     for element in raw_data.get("elements", []):
-                        # FIX #5 (partial): use explicit None checks instead of falsy
-                        # so lat/lon of 0.0 (equator) is not silently dropped
                         m_lat = element.get("lat") if element.get("lat") is not None else element.get("center", {}).get("lat")
                         m_lon = element.get("lon") if element.get("lon") is not None else element.get("center", {}).get("lon")
                         if m_lat is not None and m_lon is not None:
@@ -294,26 +313,24 @@ async def get_yearly_islamic_events(
     location_name: str = None,
     latitude: float = None,
     longitude: float = None,
-    target_year: int = None   # FIX #3: was hardcoded 2026
+    target_year: int = None
 ) -> list | dict:
     """
     Retrieves significant Islamic calendar milestones for a target year.
     Defaults to the current year if not specified.
     """
-    # FIX #3: Default to current year instead of hardcoded 2026
     target_year = target_year or datetime.date.today().year
 
     try:
         location = await resolve_location(location_name, latitude, longitude)
         if isinstance(location, dict):
-            local_route = True  # fallback to Malaysia route if location fails
+            local_route = True
         else:
             lat, lon = location
             local_route = is_malaysia(lat, lon)
     except Exception:
         local_route = True
 
-    # FIX #6: Cache events by (route, year) — 24hr TTL since events don't change
     cache_key = (local_route, target_year)
     if cache_key in _events_cache:
         return _events_cache[cache_key]
@@ -344,7 +361,6 @@ async def get_yearly_islamic_events(
                 raw_data = response.json()
                 for item in raw_data.get("data", []):
                     greg_date = datetime.datetime.strptime(item["gregorianDate"], "%d-%m-%Y").strftime("%Y-%m-%d")
-                    # FIX #5: Safe null-guard for arahName — avoids AttributeError if field is None
                     event_name = (item.get("arahName") or item.get("label") or "").strip()
                     event_list.append({
                         "event_name": event_name,
@@ -357,6 +373,53 @@ async def get_yearly_islamic_events(
     event_list.sort(key=lambda x: x["gregorian_date"])
     _events_cache[cache_key] = event_list
     return event_list
+
+
+# ==================== MCP RESOURCE: SERVER STATUS ====================
+
+@mcp.resource("esolat://server-status")
+async def get_server_status() -> dict:
+    """
+    MCP Resource: Returns live health status of the esolat-mcp server and all upstream APIs.
+    Also reports the current version and whether a newer version is available on PyPI.
+    Use this resource to proactively check if JAKIM or other APIs are down before calling prayer time tools.
+    """
+    return await _build_status_payload()
+
+
+# ==================== SHARED STATUS BUILDER ====================
+
+async def _build_status_payload() -> dict:
+    """
+    Shared logic for building the status payload used by both the HTTP dashboard
+    and the MCP Resource. Runs all upstream checks concurrently.
+    """
+    import asyncio
+    current_date = datetime.date.today()
+
+    # Run all checks concurrently for fast dashboard load
+    jakim_task = check_api_status("https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all")
+    waktu_task = check_api_status(f"https://api.waktusolat.app/v2/solat/gps/3.0219423/101.791623?year={current_date.year}&month={current_date.month}")
+    osm_task = check_api_status("https://nominatim.openstreetmap.org/search?q=Kajang&format=json&limit=1", headers=OSM_HEADERS)
+    pypi_task = check_pypi_version()
+
+    jakim_status, waktu_status, osm_status, (latest_version, update_available) = await asyncio.gather(
+        jakim_task, waktu_task, osm_task, pypi_task
+    )
+
+    return {
+        "server": "esolat-mcp",
+        "status": "ONLINE",
+        "version": CURRENT_VERSION,
+        "latest_version": latest_version,
+        "update_available": update_available,
+        "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()[:-6] + "Z",
+        "upstream_apis": {
+            "jakim_e_solat": jakim_status,
+            "waktu_solat_app": waktu_status,
+            "openstreetmap_nominatim": osm_status
+        }
+    }
 
 
 # ==================== WEBHOOK TRANSPORT LAYER MIDDLEWARE ====================
@@ -393,11 +456,6 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
                     content={"error": "Use your secure webhook token path to access this server."}
                 )
 
-        # FIX #1: REMOVED the /mcp /sse /events passthrough that bypassed token auth.
-        # Previously these paths were allowed through without token verification,
-        # meaning anyone could reach the live MCP endpoint without a token.
-        # Now ALL paths except "/" and "/favicon.ico" must carry the token prefix.
-
         # 3. Reject anything outside the authenticated token namespace
         if not path.startswith(expected_prefix):
             return StarletteJSONResponse(
@@ -405,25 +463,10 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
                 content={"error": "Forbidden: Unauthorized Webhook Signature Path."}
             )
 
-        # 4. Health dashboard — GET on the exact token prefix
+        # 4. Health dashboard — GET on the exact token prefix (now uses shared builder)
         if path.rstrip("/") == expected_prefix.rstrip("/") and method == "GET":
-            current_date = datetime.date.today()
-            target_month = current_date.month
-            target_year = current_date.year
-            jakim_status = await check_api_status("https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all")
-            waktu_status = await check_api_status(f"https://api.waktusolat.app/v2/solat/gps/3.0219423/101.791623?year={target_year}&month={target_month}")
-            osm_status = await check_api_status("https://nominatim.openstreetmap.org/search?q=Kajang&format=json&limit=1", headers=OSM_HEADERS)
-            return StarletteJSONResponse(status_code=200, content={
-                "server": "esolat-mcp",
-                "status": "ONLINE",
-                "version": "1.0.1",
-                "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()[:-6] + "Z",
-                "upstream_apis": {
-                    "jakim_e_solat": jakim_status,
-                    "waktu_solat_app": waktu_status,
-                    "openstreetmap_nominatim": osm_status
-                }
-            })
+            payload = await _build_status_payload()
+            return StarletteJSONResponse(status_code=200, content=payload)
 
         # 5. Strip token prefix and forward to FastMCP app
         if path.startswith(expected_prefix):
