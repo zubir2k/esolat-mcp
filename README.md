@@ -95,11 +95,17 @@ http://your-server-ip:8626/api/webhook/<MCP_WEBHOOK_TOKEN>
 ```
 (GET request without /mcp — shows status of JAKIM, Aladhan, and Overpass APIs)
 
-> [!Caution]
-> Always keep your `MCP_WEBHOOK_TOKEN` secret. \
-> The token is part of the URL path for simple authentication. \
-> You can change the port via the `PORT` environment variable. \
-> For production, consider using a reverse proxy (Nginx/Cloudflare) with HTTPS.
+> [!WARNING]
+> Always keep your `MCP_WEBHOOK_TOKEN` secret.
+> The token is part of the URL path for simple authentication. You can change the local port via the `PORT` environment variable.
+> 
+> **For production:** Consider using a reverse proxy (Nginx/Cloudflare) with HTTPS to prevent the token from being intercepted or leaked in access logs.
+
+> [!TIP]
+> **Prefer a simpler setup?**
+> If you want a no-server, no-Docker solution that runs on the edge, consider my **Cloudflare Worker edition** (free tier eligible). It automatically enforces HTTPS and avoids the self-hosting risks mentioned above.
+> 
+> 👉 Head over to the repo: [zubir2k/esolat-cfworker](https://github.com/zubir2k/esolat-cfworker)
 
 ## Usage Examples (Claude)
 ### Prayer Times
