@@ -1,4 +1,4 @@
-﻿[project]
+[project]
 name = "esolat-mcp"
 version = "1.0.2"
 description = "MCP server for prayer times (JAKIM/global), nearest mosque finder, and Islamic calendar events"
