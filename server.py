@@ -1,4 +1,4 @@
-import os
+﻿import os
 import math
 import datetime
 import httpx
@@ -16,9 +16,25 @@ except ImportError:
 
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.1"
+CURRENT_VERSION = "1.0.2"
 PYPI_PACKAGE_NAME = "esolat-mcp"
-WEBHOOK_TOKEN = os.environ.get("MCP_WEBHOOK_TOKEN", "esolat_secure_token")
+
+# Token validation â€” fail loudly in HTTP mode if unset or still using insecure default
+_raw_token = os.environ.get("MCP_WEBHOOK_TOKEN", "")
+if os.environ.get("MCP_TRANSPORT", "stdio").lower() == "http":
+    if not _raw_token:
+        raise RuntimeError(
+            "[esolat-mcp] MCP_WEBHOOK_TOKEN is not set. "
+            "Set it to a strong random secret before starting the HTTP server. "
+            "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(32))\""
+        )
+    if _raw_token == "esolat_secure_token":
+        raise RuntimeError(
+            "[esolat-mcp] MCP_WEBHOOK_TOKEN is still set to the insecure default 'esolat_secure_token'. "
+            "Please change it to a strong random secret."
+        )
+WEBHOOK_TOKEN = _raw_token or "esolat_secure_token"  # stdio mode: value unused
+
 PORT = int(os.environ.get("PORT", "8626"))
 TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").lower()
 
@@ -42,7 +58,7 @@ if TRANSPORT == "http" and HAS_TRANSPORT_SECURITY:
         "esolat-mcp",
         stateless_http=True,
         transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=False
+            enable_dns_rebinding_protection=True
         )
     )
 elif TRANSPORT == "http":
@@ -124,10 +140,14 @@ async def resolve_location(location_name: str = None, latitude: float = None, lo
         cache_key = location_name.strip().lower()
         if cache_key in _geocode_cache:
             return _geocode_cache[cache_key]
-        url = f"https://nominatim.openstreetmap.org/search?q={location_name}&format=json&limit=1"
         try:
             async with httpx.AsyncClient(follow_redirects=True) as client:
-                response = await client.get(url, headers=OSM_HEADERS, timeout=10.0)
+                response = await client.get(
+                    "https://nominatim.openstreetmap.org/search",
+                    params={"q": location_name, "format": "json", "limit": 1},
+                    headers=OSM_HEADERS,
+                    timeout=10.0
+                )
                 data = response.json()
         except httpx.RequestError:
             return {"error": "Location lookup failed: could not reach OpenStreetMap. Try again later."}
@@ -437,17 +457,15 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
         if path == "/favicon.ico":
             return StarletteJSONResponse(status_code=204, content=None)
 
-        # 2. Root path landing page
+        # 2. Root path landing page â€” token intentionally omitted to prevent leakage
         if path == "/":
             if method == "GET":
                 landing_text = (
                     "esolat-mcp server is up and running!\n\n"
-                    "To connect, paste the full URL (including your secret /api/webhook/ token key)\n"
-                    "into the connector or MCP settings of your AI/LLM client.\n\n"
-                    "Your private browser health dashboard endpoint:\n"
-                    f"http://<YOUR_IP_OR_DOMAIN>:{PORT}{expected_prefix}/\n\n"
-                    "Your private AI agent connection endpoint:\n"
-                    f"http://<YOUR_IP_OR_DOMAIN>:{PORT}{expected_prefix}/mcp"
+                    "To connect, use your configured MCP_WEBHOOK_TOKEN to construct the endpoint:\n"
+                    f"  Health dashboard : http://<YOUR_IP_OR_DOMAIN>:{PORT}/api/webhook/<TOKEN>/\n"
+                    f"  MCP endpoint     : http://<YOUR_IP_OR_DOMAIN>:{PORT}/api/webhook/<TOKEN>/mcp\n\n"
+                    "Refer to your .env or docker-compose.yml for the configured token."
                 )
                 return PlainTextResponse(status_code=200, content=landing_text)
             else:
@@ -463,14 +481,14 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
                 content={"error": "Forbidden: Unauthorized Webhook Signature Path."}
             )
 
-        # 4. Health dashboard — GET on the exact token prefix (now uses shared builder)
+        # 4. Health dashboard â€” GET on the exact token prefix (now uses shared builder)
         if path.rstrip("/") == expected_prefix.rstrip("/") and method == "GET":
             payload = await _build_status_payload()
             return StarletteJSONResponse(status_code=200, content=payload)
 
-        # 5. Strip token prefix and forward to FastMCP app
+        # 5. Strip token prefix and forward to FastMCP app (use slicing, not str.replace)
         if path.startswith(expected_prefix):
-            request.scope["path"] = path.replace(expected_prefix, "") or "/"
+            request.scope["path"] = path[len(expected_prefix):] or "/"
             return await call_next(request)
 
 
