@@ -1,5 +1,6 @@
-﻿import os
+import os
 import math
+import logging
 import datetime
 import httpx
 from cachetools import TTLCache
@@ -14,12 +15,21 @@ try:
 except ImportError:
     HAS_TRANSPORT_SECURITY = False
 
+# ==================== LOGGING ====================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    datefmt="%Y-%m-%dT%H:%M:%S"
+)
+logger = logging.getLogger("esolat-mcp")
+
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.3"
 PYPI_PACKAGE_NAME = "esolat-mcp"
 
-# Token validation â€” fail loudly in HTTP mode if unset or still using insecure default
+# Token validation -- fail loudly in HTTP mode if unset or still using insecure default
 _raw_token = os.environ.get("MCP_WEBHOOK_TOKEN", "")
 if os.environ.get("MCP_TRANSPORT", "stdio").lower() == "http":
     if not _raw_token:
@@ -38,35 +48,13 @@ WEBHOOK_TOKEN = _raw_token or "esolat_secure_token"  # stdio mode: value unused
 PORT = int(os.environ.get("PORT", "8626"))
 TRANSPORT = os.environ.get("MCP_TRANSPORT", "stdio").lower()
 
-# ==================== CACHES ====================
-# Nominatim geocoding: 24-hour TTL, max 256 unique location strings.
-_geocode_cache: TTLCache = TTLCache(maxsize=256, ttl=86400)
-
-# Prayer times: 1-hour TTL, keyed by (lat, lon, year, month).
-_prayer_cache: TTLCache = TTLCache(maxsize=128, ttl=3600)
-
-# Islamic events: 24-hour TTL, keyed by (route, year).
-_events_cache: TTLCache = TTLCache(maxsize=64, ttl=86400)
-
-# PyPI version check: 1-hour TTL to avoid hammering PyPI on every dashboard load.
-_pypi_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)
-
-# ==================== MCP INIT ====================
-
-if TRANSPORT == "http" and HAS_TRANSPORT_SECURITY:
-    mcp = FastMCP(
-        "esolat-mcp",
-        stateless_http=True,
-        transport_security=TransportSecuritySettings(
-            enable_dns_rebinding_protection=True
-        )
-    )
-elif TRANSPORT == "http":
-    mcp = FastMCP("esolat-mcp", stateless_http=True)
-else:
-    mcp = FastMCP("esolat-mcp")
-
 # ==================== CONSTANTS ====================
+
+DHUHA_OFFSET_MINUTES = 28
+MALAYSIA_LAT_MIN, MALAYSIA_LAT_MAX = 1.0, 7.5
+MALAYSIA_LON_MIN, MALAYSIA_LON_MAX = 99.5, 119.5
+MAX_MOSQUES_RETURNED = 15
+HEALTH_CHECK_TIMEOUT = 5.0
 
 HIJRI_MONTHS = {
     "01": "Muharram", "02": "Safar", "03": "Rabi'ul Awwal", "04": "Rabi'ul Akhir",
@@ -76,14 +64,43 @@ HIJRI_MONTHS = {
 
 OSM_HEADERS = {"User-Agent": "esolat-mcp-engine/1.0 (Self-Hosted Agent Context)"}
 
+# ==================== GLOBAL HTTP CLIENT (connection pooling) ====================
+# Single shared client enables TCP/TLS connection reuse across all tool calls.
+http_client = httpx.AsyncClient(follow_redirects=True, timeout=15.0)
+
+# ==================== CACHES ====================
+_geocode_cache: TTLCache = TTLCache(maxsize=256, ttl=86400)
+_prayer_cache: TTLCache = TTLCache(maxsize=128, ttl=3600)
+_events_cache: TTLCache = TTLCache(maxsize=64, ttl=86400)
+_pypi_cache: TTLCache = TTLCache(maxsize=1, ttl=3600)
+
+# ==================== MCP INIT ====================
+
+if TRANSPORT == "http" and HAS_TRANSPORT_SECURITY:
+    mcp = FastMCP(
+        "esolat-mcp",
+        stateless_http=True,
+        transport_security=TransportSecuritySettings(
+            # DNS rebinding protection is intentionally disabled.
+            # This server binds to 0.0.0.0 to allow cross-device LAN access
+            # (e.g. Hermes on 192.168.0.50 connecting to this server on 192.168.0.179).
+            # The SDK's allowed_hosts check does not support CIDR/wildcard IP ranges,
+            # so enabling it would block all LAN clients.
+            # Security is enforced via the webhook token auth layer instead.
+            enable_dns_rebinding_protection=False
+        )
+    )
+elif TRANSPORT == "http":
+    mcp = FastMCP("esolat-mcp", stateless_http=True)
+else:
+    mcp = FastMCP("esolat-mcp")
+
 # ==================== HELPERS ====================
 
 def is_malaysia(lat: float, lon: float) -> bool:
-    """Geographical boundary box check to route between JAKIM and Global API targets."""
-    return (1.0 <= lat <= 7.5) and (99.5 <= lon <= 119.5)
+    return (MALAYSIA_LAT_MIN <= lat <= MALAYSIA_LAT_MAX) and (MALAYSIA_LON_MIN <= lon <= MALAYSIA_LON_MAX)
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
-    """Calculates the absolute geodesic distance in kilometers between two GPS nodes."""
     R = 6371.0
     dlat = math.radians(lat2 - lat1)
     dlon = math.radians(lon2 - lon1)
@@ -92,76 +109,56 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     return round(R * c, 2)
 
 async def check_api_status(url: str, method: str = "GET", headers: dict = None) -> str:
-    """Helper to check the live status of the upstream APIs for the dashboard."""
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            if method == "POST":
-                res = await client.post(url, data={"data": "[out:json][timeout:2];out;"}, headers=headers, timeout=2.0)
-            else:
-                res = await client.get(url, headers=headers, timeout=2.0)
-            return "CONNECTED" if res.status_code in [200, 400, 404] else "DEGRADED"
-    except Exception:
+        if method == "POST":
+            res = await http_client.post(url, data={"data": "[out:json][timeout:2];out;"}, headers=headers, timeout=HEALTH_CHECK_TIMEOUT)
+        else:
+            res = await http_client.get(url, headers=headers, timeout=HEALTH_CHECK_TIMEOUT)
+        return "CONNECTED" if res.status_code in [200, 400, 404] else "DEGRADED"
+    except Exception as e:
+        logger.warning("Health check failed for %s: %s", url, e)
         return "UNREACHABLE"
 
 async def check_pypi_version() -> tuple[str, bool]:
-    """
-    Checks PyPI for the latest published version of esolat-mcp.
-    Returns (latest_version, update_available) tuple.
-    Cached for 1 hour to avoid hammering PyPI on every dashboard load.
-    """
     cache_key = "pypi_version"
     if cache_key in _pypi_cache:
         return _pypi_cache[cache_key]
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            response = await client.get(
-                f"https://pypi.org/pypi/{PYPI_PACKAGE_NAME}/json",
-                timeout=5.0
-            )
-            if response.status_code == 200:
-                latest = response.json()["info"]["version"]
-                update_available = latest != CURRENT_VERSION
-                result = (latest, update_available)
-                _pypi_cache[cache_key] = result
-                return result
-    except Exception:
-        pass
-    # If PyPI is unreachable, return current version with no update flag
+        response = await http_client.get(f"https://pypi.org/pypi/{PYPI_PACKAGE_NAME}/json", timeout=5.0)
+        if response.status_code == 200:
+            latest = response.json()["info"]["version"]
+            update_available = latest != CURRENT_VERSION
+            result = (latest, update_available)
+            _pypi_cache[cache_key] = result
+            return result
+    except Exception as e:
+        logger.warning("PyPI version check failed: %s", e)
     return (CURRENT_VERSION, False)
 
 async def resolve_location(location_name: str = None, latitude: float = None, longitude: float = None):
-    """
-    Internal Location Resolver Core.
-    If text string is supplied, converts it via OpenStreetMap Nominatim proxy (cached 24hr).
-    If raw GPS coordinates are supplied, returns them directly.
-    Returns error dict on failure so stdio transport surfaces a readable message to the LLM.
-    """
     if location_name:
         cache_key = location_name.strip().lower()
         if cache_key in _geocode_cache:
             return _geocode_cache[cache_key]
         try:
-            async with httpx.AsyncClient(follow_redirects=True) as client:
-                response = await client.get(
-                    "https://nominatim.openstreetmap.org/search",
-                    params={"q": location_name, "format": "json", "limit": 1},
-                    headers=OSM_HEADERS,
-                    timeout=10.0
-                )
-                data = response.json()
-        except httpx.RequestError:
-            return {"error": "Location lookup failed: could not reach OpenStreetMap. Try again later."}
+            response = await http_client.get(
+                "https://nominatim.openstreetmap.org/search",
+                params={"q": location_name, "format": "json", "limit": 1},
+                headers=OSM_HEADERS,
+                timeout=10.0
+            )
+            data = response.json()
+        except (httpx.RequestError, ValueError) as e:
+            logger.error("Geocoding failed for '%s': %s", location_name, e)
+            return {"error": "Location lookup failed: could not reach or parse OpenStreetMap data. Try again later."}
         if not data:
             return {"error": f"Location '{location_name}' could not be resolved. Try a different name or use coordinates."}
         result = (float(data[0]["lat"]), float(data[0]["lon"]))
         _geocode_cache[cache_key] = result
         return result
-
     if latitude is not None and longitude is not None:
         return (latitude, longitude)
-
     return {"error": "Provide either a location_name string or latitude/longitude coordinates."}
-
 # ==================== MCP CORE TOOLS ====================
 
 @mcp.tool()
@@ -194,64 +191,67 @@ async def get_monthly_prayer_times(
     processed_prayers = []
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            if is_malaysia(lat, lon):
-                url = f"https://api.waktusolat.app/v2/solat/gps/{lat}/{lon}?year={target_year}&month={target_month}"
-                response = await client.get(url, timeout=15.0)
-                if response.status_code != 200:
-                    return {"error": "The Malaysian prayer time API (WaktuSolat) is currently unreachable. Please try again later."}
-                raw_data = response.json()
-                for day_entry in raw_data.get("prayers", []):
-                    syuruk_ts = day_entry["syuruk"]
-                    dhuha_ts = syuruk_ts + (28 * 60)
-                    def parse_epoch(ts):
-                        return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone(datetime.timedelta(hours=8))).strftime("%H:%M")
-                    hijri_raw = day_entry["hijri"]
-                    h_y, h_m, h_d = hijri_raw.split("-")
-                    hijri_full = f"{int(h_d)} {HIJRI_MONTHS.get(h_m, h_m)} {h_y}"
-                    processed_prayers.append({
-                        "date": f"{target_year}-{str(target_month).zfill(2)}-{str(day_entry['day']).zfill(2)}",
-                        "day_name": datetime.datetime.strptime(f"{target_year}-{target_month}-{day_entry['day']}", "%Y-%m-%d").strftime("%A"),
-                        "hijri_raw": hijri_raw,
-                        "hijri_full": hijri_full,
-                        "fajr": parse_epoch(day_entry["fajr"]),
-                        "syuruk": parse_epoch(syuruk_ts),
-                        "dhuha": parse_epoch(dhuha_ts),
-                        "dhuhr": parse_epoch(day_entry["dhuhr"]),
-                        "asr": parse_epoch(day_entry["asr"]),
-                        "maghrib": parse_epoch(day_entry["maghrib"]),
-                        "isha": parse_epoch(day_entry["isha"])
-                    })
-            else:
-                url = f"https://api.aladhan.com/v1/calendar?latitude={lat}&longitude={lon}&method=2&month={target_month}&year={target_year}"
-                response = await client.get(url, timeout=15.0)
-                if response.status_code != 200:
-                    return {"error": "The global prayer time API (Aladhan) is currently unreachable. Please try again later."}
-                raw_data = response.json()
-                for day_entry in raw_data.get("data", []):
-                    timings = day_entry["timings"]
-                    greg_date = day_entry["date"]["gregorian"]["date"]
-                    parsed_greg = datetime.datetime.strptime(greg_date, "%d-%m-%Y").strftime("%Y-%m-%d")
-                    syuruk_str = timings["Sunrise"].split(" ")[0]
-                    syuruk_time = datetime.datetime.strptime(syuruk_str, "%H:%M")
-                    dhuha_time = (syuruk_time + datetime.timedelta(minutes=28)).strftime("%H:%M")
-                    hijri_meta = day_entry["date"]["hijri"]
-                    h_month_num = str(hijri_meta["month"]["number"]).zfill(2)
-                    hijri_full = f"{hijri_meta['day']} {HIJRI_MONTHS.get(h_month_num, hijri_meta['month']['en'])} {hijri_meta['year']}"
-                    processed_prayers.append({
-                        "date": parsed_greg,
-                        "day_name": day_entry["date"]["gregorian"]["weekday"]["en"],
-                        "hijri_raw": f"{hijri_meta['year']}-{h_month_num}-{str(hijri_meta['day']).zfill(2)}",
-                        "hijri_full": hijri_full,
-                        "fajr": timings["Fajr"].split(" ")[0],
-                        "syuruk": syuruk_str,
-                        "dhuha": dhuha_time,
-                        "dhuhr": timings["Dhuhr"].split(" ")[0],
-                        "asr": timings["Asr"].split(" ")[0],
-                        "maghrib": timings["Maghrib"].split(" ")[0],
-                        "isha": timings["Isha"].split(" ")[0]
-                    })
-    except httpx.RequestError:
+        if is_malaysia(lat, lon):
+            url = f"https://api.waktusolat.app/v2/solat/gps/{lat}/{lon}?year={target_year}&month={target_month}"
+            response = await http_client.get(url, timeout=15.0)
+            if response.status_code != 200:
+                return {"error": "The Malaysian prayer time API (WaktuSolat) is currently unreachable. Please try again later."}
+            raw_data = response.json()
+            for day_entry in raw_data.get("prayers", []):
+                syuruk_ts = day_entry["syuruk"]
+                dhuha_ts = syuruk_ts + (DHUHA_OFFSET_MINUTES * 60)
+                def parse_epoch(ts):
+                    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                hijri_raw = day_entry["hijri"]
+                h_y, h_m, h_d = hijri_raw.split("-")
+                hijri_full = f"{int(h_d)} {HIJRI_MONTHS.get(h_m, h_m)} {h_y}"
+                processed_prayers.append({
+                    "date": f"{target_year}-{str(target_month).zfill(2)}-{str(day_entry['day']).zfill(2)}",
+                    "day_name": datetime.datetime.strptime(f"{target_year}-{target_month}-{day_entry['day']}", "%Y-%m-%d").strftime("%A"),
+                    "hijri_raw": hijri_raw,
+                    "hijri_full": hijri_full,
+                    "fajr": parse_epoch(day_entry["fajr"]),
+                    "syuruk": parse_epoch(syuruk_ts),
+                    "dhuha": parse_epoch(dhuha_ts),
+                    "dhuhr": parse_epoch(day_entry["dhuhr"]),
+                    "asr": parse_epoch(day_entry["asr"]),
+                    "maghrib": parse_epoch(day_entry["maghrib"]),
+                    "isha": parse_epoch(day_entry["isha"])
+                })
+        else:
+            url = f"https://api.aladhan.com/v1/calendar?latitude={lat}&longitude={lon}&method=2&month={target_month}&year={target_year}"
+            response = await http_client.get(url, timeout=15.0)
+            if response.status_code != 200:
+                return {"error": "The global prayer time API (Aladhan) is currently unreachable. Please try again later."}
+            raw_data = response.json()
+            for day_entry in raw_data.get("data", []):
+                timings = day_entry["timings"]
+                greg_date = day_entry["date"]["gregorian"]["date"]
+                parsed_greg = datetime.datetime.strptime(greg_date, "%d-%m-%Y").strftime("%Y-%m-%d")
+                def to_iso(t: str) -> str:
+                    h, m = map(int, t.split(":"))
+                    return datetime.datetime(int(parsed_greg[:4]), int(parsed_greg[5:7]), int(parsed_greg[8:10]), h - 8, m, tzinfo=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+                syuruk_str = timings["Sunrise"].split(" ")[0]
+                syuruk_time = datetime.datetime.strptime(syuruk_str, "%H:%M")
+                dhuha_time = (syuruk_time + datetime.timedelta(minutes=DHUHA_OFFSET_MINUTES)).strftime("%H:%M")
+                hijri_meta = day_entry["date"]["hijri"]
+                h_month_num = str(hijri_meta["month"]["number"]).zfill(2)
+                hijri_full = f"{hijri_meta['day']} {HIJRI_MONTHS.get(h_month_num, hijri_meta['month']['en'])} {hijri_meta['year']}"
+                processed_prayers.append({
+                    "date": parsed_greg,
+                    "day_name": day_entry["date"]["gregorian"]["weekday"]["en"],
+                    "hijri_raw": f"{hijri_meta['year']}-{h_month_num}-{str(hijri_meta['day']).zfill(2)}",
+                    "hijri_full": hijri_full,
+                    "fajr": to_iso(timings["Fajr"].split(" ")[0]),
+                    "syuruk": to_iso(syuruk_str),
+                    "dhuha": to_iso(dhuha_time),
+                    "dhuhr": to_iso(timings["Dhuhr"].split(" ")[0]),
+                    "asr": to_iso(timings["Asr"].split(" ")[0]),
+                    "maghrib": to_iso(timings["Maghrib"].split(" ")[0]),
+                    "isha": to_iso(timings["Isha"].split(" ")[0])
+                })
+    except httpx.RequestError as e:
+        logger.error("Network error fetching prayer times: %s", e)
         return {"error": "Network error while fetching prayer times. Please try again later."}
 
     _prayer_cache[cache_key] = processed_prayers
@@ -277,26 +277,25 @@ async def find_nearest_mosques(
     mosque_list = []
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            if is_malaysia(lat, lon):
-                url = f"https://www.e-solat.gov.my/index.php?r=esolatApi/nearestMosque&lat={lat}&long={lon}&dist={distance_km}"
-                response = await client.get(url, timeout=15.0)
-                if response.status_code == 200:
-                    raw_data = response.json()
-                    for item in raw_data.get("locationData", []):
-                        m_lat = float(item["latitud"])
-                        m_lon = float(item["longitud"])
-                        mosque_list.append({
-                            "name": item["nama_masjid"].strip(),
-                            "distance_km": round(float(item["distance"]), 2),
-                            "coordinates": {"latitude": m_lat, "longitude": m_lon},
-                            "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
-                            "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
-                        })
-            else:
-                radius_meters = distance_km * 1000
-                overpass_url = "https://overpass-api.de/api/interpreter"
-                query = f"""
+        if is_malaysia(lat, lon):
+            url = f"https://www.e-solat.gov.my/index.php?r=esolatApi/nearestMosque&lat={lat}&long={lon}&dist={distance_km}"
+            response = await http_client.get(url, timeout=15.0)
+            if response.status_code == 200:
+                raw_data = response.json()
+                for item in raw_data.get("locationData", []):
+                    m_lat = float(item["latitud"])
+                    m_lon = float(item["longitud"])
+                    mosque_list.append({
+                        "name": item["nama_masjid"].strip(),
+                        "distance_km": round(float(item["distance"]), 2),
+                        "coordinates": {"latitude": m_lat, "longitude": m_lon},
+                        "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
+                        "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
+                    })
+        else:
+            radius_meters = distance_km * 1000
+            overpass_url = "https://overpass-api.de/api/interpreter"
+            query = f"""
 [out:json][timeout:25];
 (
   node["amenity"="place_of_worship"]["religion"="muslim"](around:{radius_meters},{lat},{lon});
@@ -304,29 +303,29 @@ async def find_nearest_mosques(
 );
 out body center;
 """
-                response = await client.post(overpass_url, data={"data": query}, headers=OSM_HEADERS, timeout=30.0)
-                if response.status_code == 200:
-                    raw_data = response.json()
-                    for element in raw_data.get("elements", []):
-                        m_lat = element.get("lat") if element.get("lat") is not None else element.get("center", {}).get("lat")
-                        m_lon = element.get("lon") if element.get("lon") is not None else element.get("center", {}).get("lon")
-                        if m_lat is not None and m_lon is not None:
-                            tags = element.get("tags", {})
-                            name = tags.get("name", tags.get("official_name", "Mosque / Muslim Place of Worship"))
-                            computed_dist = haversine_distance(lat, lon, m_lat, m_lon)
-                            mosque_list.append({
-                                "name": name.strip(),
-                                "distance_km": computed_dist,
-                                "coordinates": {"latitude": m_lat, "longitude": m_lon},
-                                "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
-                                "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
-                            })
-    except httpx.RequestError:
+            response = await http_client.post(overpass_url, data={"data": query}, headers=OSM_HEADERS, timeout=30.0)
+            if response.status_code == 200:
+                raw_data = response.json()
+                for element in raw_data.get("elements", []):
+                    m_lat = element.get("lat") if element.get("lat") is not None else element.get("center", {}).get("lat")
+                    m_lon = element.get("lon") if element.get("lon") is not None else element.get("center", {}).get("lon")
+                    if m_lat is not None and m_lon is not None:
+                        tags = element.get("tags", {})
+                        name = tags.get("name", tags.get("official_name", "Mosque / Muslim Place of Worship"))
+                        computed_dist = haversine_distance(lat, lon, m_lat, m_lon)
+                        mosque_list.append({
+                            "name": name.strip(),
+                            "distance_km": computed_dist,
+                            "coordinates": {"latitude": m_lat, "longitude": m_lon},
+                            "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
+                            "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
+                        })
+    except httpx.RequestError as e:
+        logger.error("Network error fetching mosques: %s", e)
         return {"error": "Network error while searching for mosques. Please try again later."}
 
     mosque_list.sort(key=lambda x: x["distance_km"])
-    return mosque_list[:15]
-
+    return mosque_list[:MAX_MOSQUES_RETURNED]
 
 @mcp.tool()
 async def get_yearly_islamic_events(
@@ -358,36 +357,36 @@ async def get_yearly_islamic_events(
     event_list = []
 
     try:
-        async with httpx.AsyncClient(follow_redirects=True) as client:
-            if local_route:
-                url = "https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all"
-                response = await client.get(url, timeout=15.0)
-                if response.status_code != 200:
-                    return {"error": "The JAKIM Islamic events API is currently unreachable. Please try again later."}
-                raw_data = response.json()
-                for item in raw_data.get("event", []):
-                    greg_date = item.get("tarikh_miladi", "")
-                    if greg_date.startswith(str(target_year)):
-                        event_list.append({
-                            "event_name": item["hari_peristiwa"].replace("*", "").strip(),
-                            "gregorian_date": greg_date,
-                            "hijri_date": item["tarikh_hijri"]
-                        })
-            else:
-                url = f"https://api.aladhan.com/v1/islamicEvents?year={target_year}"
-                response = await client.get(url, timeout=15.0)
-                if response.status_code != 200:
-                    return {"error": "The Aladhan Islamic events API is currently unreachable. Please try again later."}
-                raw_data = response.json()
-                for item in raw_data.get("data", []):
-                    greg_date = datetime.datetime.strptime(item["gregorianDate"], "%d-%m-%Y").strftime("%Y-%m-%d")
-                    event_name = (item.get("arahName") or item.get("label") or "").strip()
+        if local_route:
+            url = "https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all"
+            response = await http_client.get(url, timeout=15.0)
+            if response.status_code != 200:
+                return {"error": "The JAKIM Islamic events API is currently unreachable. Please try again later."}
+            raw_data = response.json()
+            for item in raw_data.get("event", []):
+                greg_date = item.get("tarikh_miladi", "")
+                if greg_date.startswith(str(target_year)):
                     event_list.append({
-                        "event_name": event_name,
+                        "event_name": item["hari_peristiwa"].replace("*", "").strip(),
                         "gregorian_date": greg_date,
-                        "hijri_date": f"{item['hijriYear']}-{str(item['hijriMonth']).zfill(2)}-{str(item['hijriDay']).zfill(2)}"
+                        "hijri_date": item["tarikh_hijri"]
                     })
-    except httpx.RequestError:
+        else:
+            url = f"https://api.aladhan.com/v1/islamicEvents?year={target_year}"
+            response = await http_client.get(url, timeout=15.0)
+            if response.status_code != 200:
+                return {"error": "The Aladhan Islamic events API is currently unreachable. Please try again later."}
+            raw_data = response.json()
+            for item in raw_data.get("data", []):
+                greg_date = datetime.datetime.strptime(item["gregorianDate"], "%d-%m-%Y").strftime("%Y-%m-%d")
+                event_name = (item.get("arahName") or item.get("label") or "").strip()
+                event_list.append({
+                    "event_name": event_name,
+                    "gregorian_date": greg_date,
+                    "hijri_date": f"{item['hijriYear']}-{str(item['hijriMonth']).zfill(2)}-{str(item['hijriDay']).zfill(2)}"
+                })
+    except httpx.RequestError as e:
+        logger.error("Network error fetching Islamic events: %s", e)
         return {"error": "Network error while fetching Islamic events. Please try again later."}
 
     event_list.sort(key=lambda x: x["gregorian_date"])
@@ -410,14 +409,9 @@ async def get_server_status() -> dict:
 # ==================== SHARED STATUS BUILDER ====================
 
 async def _build_status_payload() -> dict:
-    """
-    Shared logic for building the status payload used by both the HTTP dashboard
-    and the MCP Resource. Runs all upstream checks concurrently.
-    """
     import asyncio
     current_date = datetime.date.today()
 
-    # Run all checks concurrently for fast dashboard load
     jakim_task = check_api_status("https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all")
     waktu_task = check_api_status(f"https://api.waktusolat.app/v2/solat/gps/3.0219423/101.791623?year={current_date.year}&month={current_date.month}")
     osm_task = check_api_status("https://nominatim.openstreetmap.org/search?q=Kajang&format=json&limit=1", headers=OSM_HEADERS)
@@ -453,11 +447,9 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
         method = request.method
         expected_prefix = f"/api/webhook/{WEBHOOK_TOKEN}"
 
-        # 1. Silence favicon noise
         if path == "/favicon.ico":
             return StarletteJSONResponse(status_code=204, content=None)
 
-        # 2. Root path landing page â€” token intentionally omitted to prevent leakage
         if path == "/":
             if method == "GET":
                 landing_text = (
@@ -474,19 +466,16 @@ class SecurePathAndDashboardMiddleware(BaseHTTPMiddleware):
                     content={"error": "Use your secure webhook token path to access this server."}
                 )
 
-        # 3. Reject anything outside the authenticated token namespace
         if not path.startswith(expected_prefix):
             return StarletteJSONResponse(
                 status_code=401,
                 content={"error": "Forbidden: Unauthorized Webhook Signature Path."}
             )
 
-        # 4. Health dashboard â€” GET on the exact token prefix (now uses shared builder)
         if path.rstrip("/") == expected_prefix.rstrip("/") and method == "GET":
             payload = await _build_status_payload()
             return StarletteJSONResponse(status_code=200, content=payload)
 
-        # 5. Strip token prefix and forward to FastMCP app (use slicing, not str.replace)
         if path.startswith(expected_prefix):
             request.scope["path"] = path[len(expected_prefix):] or "/"
             return await call_next(request)
@@ -506,6 +495,7 @@ def main():
         import uvicorn
         app = mcp.streamable_http_app()
         app.add_middleware(SecurePathAndDashboardMiddleware)
+        logger.info("Starting esolat-mcp HTTP server on 0.0.0.0:%s", PORT)
         uvicorn.run(
             app,
             host="0.0.0.0",
