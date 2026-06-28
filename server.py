@@ -26,7 +26,7 @@ logger = logging.getLogger("esolat-mcp")
 
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.3"
+CURRENT_VERSION = "1.0.4"
 PYPI_PACKAGE_NAME = "esolat-mcp"
 
 # Token validation -- fail loudly in HTTP mode if unset or still using insecure default
@@ -159,7 +159,41 @@ async def resolve_location(location_name: str = None, latitude: float = None, lo
     if latitude is not None and longitude is not None:
         return (latitude, longitude)
     return {"error": "Provide either a location_name string or latitude/longitude coordinates."}
+# ==================== CURRENT TIME HELPER ====================
+
+def _get_current_time_utc() -> dict:
+    """Shared helper returning current UTC time + Hijri date. Zero external calls."""
+    now_utc = datetime.datetime.now(datetime.timezone.utc)
+    current_time_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    # Compute approximate Hijri date using a simple epoch offset
+    # Hijri epoch: 1 Muharram 1 AH = 16 July 622 CE (Julian)
+    gregorian_ordinal = now_utc.toordinal()
+    hijri_epoch_ordinal = datetime.date(622, 7, 16).toordinal()
+    days_since_hijri = gregorian_ordinal - hijri_epoch_ordinal
+    hijri_year = int((days_since_hijri * 30) / 10631) + 1
+    hijri_approx_day_of_year = days_since_hijri - int(((hijri_year - 1) * 10631) / 30)
+    hijri_month = min(int(hijri_approx_day_of_year / 29.5) + 1, 12)
+    hijri_day = max(1, hijri_approx_day_of_year - int((hijri_month - 1) * 29.5))
+    hijri_month_str = str(hijri_month).zfill(2)
+    hijri_full = f"{hijri_day} {HIJRI_MONTHS.get(hijri_month_str, hijri_month_str)} {hijri_year}"
+    return {
+        "current_time_utc": current_time_utc,
+        "hijri_date": hijri_full,
+        "source": "server"
+    }
+
 # ==================== MCP CORE TOOLS ====================
+
+@mcp.tool()
+async def get_current_time() -> dict:
+    """
+    Returns the current server UTC time and Hijri date.
+    Use this tool first when the user asks about current prayer status, time remaining to next prayer,
+    or any query that requires comparing current time against prayer times.
+    Always call this before get_monthly_prayer_times when time-aware reasoning is needed.
+    """
+    return _get_current_time_utc()
+
 
 @mcp.tool()
 async def get_monthly_prayer_times(
@@ -254,8 +288,13 @@ async def get_monthly_prayer_times(
         logger.error("Network error fetching prayer times: %s", e)
         return {"error": "Network error while fetching prayer times. Please try again later."}
 
-    _prayer_cache[cache_key] = processed_prayers
-    return processed_prayers
+    # Inject current_time_utc so agent can compare without a separate tool call
+    result = {
+        "current_time_utc": _get_current_time_utc()["current_time_utc"],
+        "prayers": processed_prayers
+    }
+    _prayer_cache[cache_key] = result
+    return result
 
 
 @mcp.tool()
