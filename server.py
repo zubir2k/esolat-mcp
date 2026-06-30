@@ -26,7 +26,7 @@ logger = logging.getLogger("esolat-mcp")
 
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.4"
+CURRENT_VERSION = "1.0.5"
 PYPI_PACKAGE_NAME = "esolat-mcp"
 
 # Token validation -- fail loudly in HTTP mode if unset or still using insecure default
@@ -162,23 +162,18 @@ async def resolve_location(location_name: str = None, latitude: float = None, lo
 # ==================== CURRENT TIME HELPER ====================
 
 def _get_current_time_utc() -> dict:
-    """Shared helper returning current UTC time + Hijri date. Zero external calls."""
+    """
+    Shared helper returning current UTC time. Zero external calls.
+    Hijri date is intentionally NOT included here: it is region-dependent
+    (moonsighting-based, can differ by +/-1 day between JAKIM, Saudi, etc.),
+    so a pure arithmetic approximation would be misleading and inconsistent
+    with the authoritative Hijri dates returned by get_monthly_prayer_times
+    and get_yearly_islamic_events (sourced directly from JAKIM/Aladhan).
+    """
     now_utc = datetime.datetime.now(datetime.timezone.utc)
     current_time_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
-    # Compute approximate Hijri date using a simple epoch offset
-    # Hijri epoch: 1 Muharram 1 AH = 16 July 622 CE (Julian)
-    gregorian_ordinal = now_utc.toordinal()
-    hijri_epoch_ordinal = datetime.date(622, 7, 16).toordinal()
-    days_since_hijri = gregorian_ordinal - hijri_epoch_ordinal
-    hijri_year = int((days_since_hijri * 30) / 10631) + 1
-    hijri_approx_day_of_year = days_since_hijri - int(((hijri_year - 1) * 10631) / 30)
-    hijri_month = min(int(hijri_approx_day_of_year / 29.5) + 1, 12)
-    hijri_day = max(1, hijri_approx_day_of_year - int((hijri_month - 1) * 29.5))
-    hijri_month_str = str(hijri_month).zfill(2)
-    hijri_full = f"{hijri_day} {HIJRI_MONTHS.get(hijri_month_str, hijri_month_str)} {hijri_year}"
     return {
         "current_time_utc": current_time_utc,
-        "hijri_date": hijri_full,
         "source": "server"
     }
 
@@ -187,10 +182,12 @@ def _get_current_time_utc() -> dict:
 @mcp.tool()
 async def get_current_time() -> dict:
     """
-    Returns the current server UTC time and Hijri date.
+    Returns the current server UTC time.
     Use this tool first when the user asks about current prayer status, time remaining to next prayer,
     or any query that requires comparing current time against prayer times.
-    Always call this before get_monthly_prayer_times when time-aware reasoning is needed.
+    For the Hijri date, use get_monthly_prayer_times or get_yearly_islamic_events instead,
+    since the Hijri calendar is region-dependent (moonsighting-based) and those tools
+    return the authoritative date sourced from JAKIM/Aladhan.
     """
     return _get_current_time_utc()
 
