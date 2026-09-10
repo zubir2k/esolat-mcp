@@ -6,7 +6,7 @@
 ![Docker](https://img.shields.io/badge/Docker-Supported-blue)
 [![Buy](https://img.shields.io/badge/Belanja-Coffee-yellow.svg)](https://zubirco.de/buymecoffee)
 
-**MCP server for accurate Malaysian prayer times (official JAKIM/e-Solat), nearest masjid and surau, and Islamic calendar events.**
+MCP server for accurate Malaysian prayer times (official JAKIM/e-Solat), nearest masjid and surau, and Islamic calendar events.
 
 Gives AI assistants like **Claude Desktop** and **Claude Code** reliable, hallucination-free access to Islamic worship tools with smart Malaysia-first routing.
 
