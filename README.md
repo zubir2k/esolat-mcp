@@ -21,6 +21,8 @@ Gives AI assistants like **Claude Desktop** and **Claude Code** reliable, halluc
 - Dual mode: **Local (stdio)** + **Remote (Docker + secure HTTP)**
 - Health dashboard for upstream APIs
 
+[![esolat-mcp MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/zubir2k/esolat-mcp/badges/card.svg)](https://glama.ai/mcp/servers/zubir2k/esolat-mcp)
+
 ## Tools
 
 The server registers three powerful tools that Claude can discover and call automatically:
