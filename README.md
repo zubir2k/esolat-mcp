@@ -35,8 +35,8 @@ The server registers three powerful tools that Claude can discover and call auto
 2. **`find_nearest_mosques`**
    - Find up to 15 nearest masjid/surau
    - Default radius: 5 km (configurable)
-   - Malaysia uses official e-Solat data; global uses OpenStreetMap
-   - Includes distance, coordinates, Google Maps & Waze links
+   - Powered by JejakMasjid (with official JAKIM e-Solat SISMIM fallback for Malaysia)
+   - Includes place type (`masjid`/`surau`), distance, cardinal direction (`E`, `NW`), coordinates, Google Maps & Waze links, and direct profile URLs
 
 3. **`get_yearly_islamic_events`**
    - Major Islamic dates and holidays for a given year
@@ -95,7 +95,7 @@ http://your-server-ip:8626/api/webhook/<MCP_WEBHOOK_TOKEN>/mcp
 ```
 http://your-server-ip:8626/api/webhook/<MCP_WEBHOOK_TOKEN>
 ```
-(GET request without /mcp — shows status of JAKIM, Aladhan, and Overpass APIs)
+(GET request without /mcp — shows status of JejakMasjid, JAKIM, WaktuSolat, and Nominatim APIs)
 
 > [!WARNING]
 > Always keep your `MCP_WEBHOOK_TOKEN` secret.
@@ -137,6 +137,7 @@ _"Major Islamic events in 2026 for Malaysia." \
 
 ## Credits
 
+- [JejakMasjid](https://jejakmasjid.my/) - Comprehensive crowdsourced & verified Masjid & Surau locator
 - [e-solat](https://www.e-solat.gov.my/) JAKIM - For the official prayer times
 - [WaktuSolat.app](https://waktusolat.app/) - Prayer Time by GPS
 - [Model Context Protocol](https://modelcontextprotocol.io/) - For the MCP framework

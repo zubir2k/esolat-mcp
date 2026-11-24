@@ -2,11 +2,13 @@ import os
 import math
 import logging
 import datetime
+import aiohttp
 import httpx
 from cachetools import TTLCache
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
+from jejakmasjid import async_fetch_nearby, JejakMasjidError
 
 # Conditional import: TransportSecuritySettings requires mcp >= 1.23.0
 try:
@@ -26,7 +28,7 @@ logger = logging.getLogger("esolat-mcp")
 
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.5"
+CURRENT_VERSION = "1.0.6"
 PYPI_PACKAGE_NAME = "esolat-mcp"
 
 # Token validation -- fail loudly in HTTP mode if unset or still using insecure default
@@ -108,12 +110,9 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return round(R * c, 2)
 
-async def check_api_status(url: str, method: str = "GET", headers: dict = None) -> str:
+async def check_api_status(url: str, headers: dict = None) -> str:
     try:
-        if method == "POST":
-            res = await http_client.post(url, data={"data": "[out:json][timeout:2];out;"}, headers=headers, timeout=HEALTH_CHECK_TIMEOUT)
-        else:
-            res = await http_client.get(url, headers=headers, timeout=HEALTH_CHECK_TIMEOUT)
+        res = await http_client.get(url, headers=headers, timeout=HEALTH_CHECK_TIMEOUT)
         return "CONNECTED" if res.status_code in [200, 400, 404] else "DEGRADED"
     except Exception as e:
         logger.warning("Health check failed for %s: %s", url, e)
@@ -303,7 +302,8 @@ async def find_nearest_mosques(
 ) -> list | dict:
     """
     Finds verified mosques, masjids, or suraus within a target search radius.
-    Injects map routing navigation strings for Google Maps and native Waze applications.
+    Powered by JejakMasjid (with JAKIM e-solat fallback for Malaysia).
+    Returns place type, distance, cardinal direction, coordinates, and navigation links.
     """
     location = await resolve_location(location_name, latitude, longitude)
     if isinstance(location, dict):
@@ -312,8 +312,37 @@ async def find_nearest_mosques(
 
     mosque_list = []
 
+    # 1. Primary: JejakMasjid (covers Malaysia & Singapore with classification, direction & profile URLs)
     try:
-        if is_malaysia(lat, lon):
+        async with aiohttp.ClientSession() as session:
+            places = await async_fetch_nearby(session, lat=lat, lon=lon, radius_km=distance_km)
+            for p in places:
+                m_lat = float(p["latitude"])
+                m_lon = float(p["longitude"])
+                dist_km = p.get("distance_km")
+                if dist_km is None:
+                    dist_km = haversine_distance(lat, lon, m_lat, m_lon)
+                mosque_entry = {
+                    "name": p["name"].strip(),
+                    "type": p.get("type", "masjid"),
+                    "distance_km": round(dist_km, 2),
+                    "coordinates": {"latitude": m_lat, "longitude": m_lon},
+                    "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
+                    "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
+                }
+                if p.get("direction"):
+                    mosque_entry["direction"] = p["direction"]
+                if p.get("url"):
+                    mosque_entry["url"] = p["url"]
+                if p.get("kursus_haji") is not None:
+                    mosque_entry["kursus_haji"] = p["kursus_haji"]
+                mosque_list.append(mosque_entry)
+    except (JejakMasjidError, Exception) as err:
+        logger.warning("JejakMasjid query failed or outside region: %s", err)
+
+    # 2. Fallback for Malaysia: JAKIM e-solat SISMIM API
+    if not mosque_list and is_malaysia(lat, lon):
+        try:
             url = f"https://www.e-solat.gov.my/index.php?r=esolatApi/nearestMosque&lat={lat}&long={lon}&dist={distance_km}"
             response = await http_client.get(url, timeout=15.0)
             if response.status_code == 200:
@@ -323,42 +352,14 @@ async def find_nearest_mosques(
                     m_lon = float(item["longitud"])
                     mosque_list.append({
                         "name": item["nama_masjid"].strip(),
+                        "type": "masjid",
                         "distance_km": round(float(item["distance"]), 2),
                         "coordinates": {"latitude": m_lat, "longitude": m_lon},
                         "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
                         "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
                     })
-        else:
-            radius_meters = distance_km * 1000
-            overpass_url = "https://overpass-api.de/api/interpreter"
-            query = f"""
-[out:json][timeout:25];
-(
-  node["amenity"="place_of_worship"]["religion"="muslim"](around:{radius_meters},{lat},{lon});
-  way["amenity"="place_of_worship"]["religion"="muslim"](around:{radius_meters},{lat},{lon});
-);
-out body center;
-"""
-            response = await http_client.post(overpass_url, data={"data": query}, headers=OSM_HEADERS, timeout=30.0)
-            if response.status_code == 200:
-                raw_data = response.json()
-                for element in raw_data.get("elements", []):
-                    m_lat = element.get("lat") if element.get("lat") is not None else element.get("center", {}).get("lat")
-                    m_lon = element.get("lon") if element.get("lon") is not None else element.get("center", {}).get("lon")
-                    if m_lat is not None and m_lon is not None:
-                        tags = element.get("tags", {})
-                        name = tags.get("name", tags.get("official_name", "Mosque / Muslim Place of Worship"))
-                        computed_dist = haversine_distance(lat, lon, m_lat, m_lon)
-                        mosque_list.append({
-                            "name": name.strip(),
-                            "distance_km": computed_dist,
-                            "coordinates": {"latitude": m_lat, "longitude": m_lon},
-                            "google_maps_link": f"https://maps.google.com/?q={m_lat},{m_lon}",
-                            "waze_link": f"https://waze.com/ul?ll={m_lat},{m_lon}&navigate=yes&z=10"
-                        })
-    except httpx.RequestError as e:
-        logger.error("Network error fetching mosques: %s", e)
-        return {"error": "Network error while searching for mosques. Please try again later."}
+        except httpx.RequestError as e:
+            logger.error("JAKIM fallback network error fetching mosques: %s", e)
 
     mosque_list.sort(key=lambda x: x["distance_km"])
     return mosque_list[:MAX_MOSQUES_RETURNED]
@@ -450,11 +451,12 @@ async def _build_status_payload() -> dict:
 
     jakim_task = check_api_status("https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all")
     waktu_task = check_api_status(f"https://api.waktusolat.app/v2/solat/gps/3.0219423/101.791623?year={current_date.year}&month={current_date.month}")
+    jejak_task = check_api_status("https://apiv2.jejakmasjid.my/api/ha/v1/masjids/nearby?lat=3.004&lng=101.788&radius=5")
     osm_task = check_api_status("https://nominatim.openstreetmap.org/search?q=Kajang&format=json&limit=1", headers=OSM_HEADERS)
     pypi_task = check_pypi_version()
 
-    jakim_status, waktu_status, osm_status, (latest_version, update_available) = await asyncio.gather(
-        jakim_task, waktu_task, osm_task, pypi_task
+    jakim_status, waktu_status, jejak_status, osm_status, (latest_version, update_available) = await asyncio.gather(
+        jakim_task, waktu_task, jejak_task, osm_task, pypi_task
     )
 
     return {
@@ -465,9 +467,10 @@ async def _build_status_payload() -> dict:
         "update_available": update_available,
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat()[:-6] + "Z",
         "upstream_apis": {
+            "jejak_masjid": jejak_status,
             "jakim_e_solat": jakim_status,
             "waktu_solat_app": waktu_status,
-            "openstreetmap_nominatim": osm_status
+            "nominatim_geocoding": osm_status
         }
     }
 
