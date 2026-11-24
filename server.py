@@ -8,7 +8,7 @@ from cachetools import TTLCache
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
-from jejakmasjid import async_fetch_nearby, JejakMasjidError
+from jejakmasjid import async_fetch_nearby, JejakMasjidError, API_TYPE_MAP
 
 # Conditional import: TransportSecuritySettings requires mcp >= 1.23.0
 try:
@@ -315,7 +315,9 @@ async def find_nearest_mosques(
     # 1. Primary: JejakMasjid (covers Malaysia & Singapore with classification, direction & profile URLs)
     try:
         async with aiohttp.ClientSession() as session:
-            places = await async_fetch_nearby(session, lat=lat, lon=lon, radius_km=distance_km)
+            places = await async_fetch_nearby(
+                session, lat=lat, lon=lon, radius_km=distance_km, api_type=API_TYPE_MAP
+            )
             for p in places:
                 m_lat = float(p["latitude"])
                 m_lon = float(p["longitude"])
@@ -451,7 +453,7 @@ async def _build_status_payload() -> dict:
 
     jakim_task = check_api_status("https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all")
     waktu_task = check_api_status(f"https://api.waktusolat.app/v2/solat/gps/3.0219423/101.791623?year={current_date.year}&month={current_date.month}")
-    jejak_task = check_api_status("https://apiv2.jejakmasjid.my/api/ha/v1/masjids/nearby?lat=3.004&lng=101.788&radius=5")
+    jejak_task = check_api_status("https://apiv2.jejakmasjid.my/api/map/nearby?lat=3.004&lng=101.788&radius=5")
     osm_task = check_api_status("https://nominatim.openstreetmap.org/search?q=Kajang&format=json&limit=1", headers=OSM_HEADERS)
     pypi_task = check_pypi_version()
 
