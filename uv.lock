@@ -391,13 +391,14 @@ wheels = [
 
 [[package]]
 name = "esolat-mcp"
-version = "1.0.6"
+version = "1.0.7"
 source = { editable = "." }
 dependencies = [
     { name = "cachetools" },
     { name = "fastapi" },
     { name = "httpx" },
     { name = "mcp", extra = ["cli"] },
+    { name = "python-esolat" },
     { name = "python-jejakmasjid" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -408,6 +409,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0,<2.0" },
+    { name = "python-esolat", specifier = ">=0.1.0" },
     { name = "python-jejakmasjid", specifier = ">=0.3.5" },
     { name = "uvicorn", extras = ["standard"] },
 ]
@@ -1166,6 +1168,18 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/82/ed/0301aeeac3e5353ef3d94b6ec08bbcabd04a72018415dcb29e588514bba8/python_dotenv-1.2.2.tar.gz", hash = "sha256:2c371a91fbd7ba082c2c1dc1f8bf89ca22564a087c2c287cd9b662adde799cf3", size = 50135, upload-time = "2026-03-01T16:00:26.196Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/0b/d7/1959b9648791274998a9c3526f6d0ec8fd2233e4d4acce81bbae76b44b2a/python_dotenv-1.2.2-py3-none-any.whl", hash = "sha256:1d8214789a24de455a8b8bd8ae6fe3c6b69a5e3d64aa8a8e5d68e694bbcb285a", size = 22101, upload-time = "2026-03-01T16:00:25.09Z" },
+]
+
+[[package]]
+name = "python-esolat"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "aiohttp" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/2d/73/b0311e9d3669a30eb5e65fafba792104e9fbf1b1d528cf5e568bea0e3fd0/python_esolat-0.1.0.tar.gz", hash = "sha256:aeeee0157b8da9282f033b3e24e39c41d573ad0daf9691b8a90ab184c8acb6ef", size = 12646, upload-time = "2026-11-24T18:43:01.741Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e1/db/d06ba14455d085bb73ca92971c918b21a2036b455bc001dd766547a104f2/python_esolat-0.1.0-py3-none-any.whl", hash = "sha256:8cd559dcf3541c0130b7151ddbca7db7295c58fb6d72c907b94c98358fbdcf7b", size = 11974, upload-time = "2026-11-24T18:43:00.799Z" },
 ]
 
 [[package]]

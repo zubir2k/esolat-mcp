@@ -9,6 +9,7 @@ from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
 from mcp.server.fastmcp import FastMCP
 from jejakmasjid import async_fetch_nearby, JejakMasjidError, API_TYPE_MAP
+from esolat import EsolatClient, get_current_time_utc, EsolatError
 
 # Conditional import: TransportSecuritySettings requires mcp >= 1.23.0
 try:
@@ -28,7 +29,7 @@ logger = logging.getLogger("esolat-mcp")
 
 # ==================== CONFIGURATION ====================
 
-CURRENT_VERSION = "1.0.6"
+CURRENT_VERSION = "1.0.7"
 PYPI_PACKAGE_NAME = "esolat-mcp"
 
 # Token validation -- fail loudly in HTTP mode if unset or still using insecure default
@@ -169,10 +170,8 @@ def _get_current_time_utc() -> dict:
     with the authoritative Hijri dates returned by get_monthly_prayer_times
     and get_yearly_islamic_events (sourced directly from JAKIM/Aladhan).
     """
-    now_utc = datetime.datetime.now(datetime.timezone.utc)
-    current_time_utc = now_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
     return {
-        "current_time_utc": current_time_utc,
+        "current_time_utc": get_current_time_utc(),
         "source": "server"
     }
 
@@ -218,75 +217,26 @@ async def get_monthly_prayer_times(
     if cache_key in _prayer_cache:
         return _prayer_cache[cache_key]
 
-    processed_prayers = []
-
     try:
-        if is_malaysia(lat, lon):
-            url = f"https://api.waktusolat.app/v2/solat/gps/{lat}/{lon}?year={target_year}&month={target_month}"
-            response = await http_client.get(url, timeout=15.0)
-            if response.status_code != 200:
-                return {"error": "The Malaysian prayer time API (WaktuSolat) is currently unreachable. Please try again later."}
-            raw_data = response.json()
-            for day_entry in raw_data.get("prayers", []):
-                syuruk_ts = day_entry["syuruk"]
-                dhuha_ts = syuruk_ts + (DHUHA_OFFSET_MINUTES * 60)
-                def parse_epoch(ts):
-                    return datetime.datetime.fromtimestamp(ts, tz=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                hijri_raw = day_entry["hijri"]
-                h_y, h_m, h_d = hijri_raw.split("-")
-                hijri_full = f"{int(h_d)} {HIJRI_MONTHS.get(h_m, h_m)} {h_y}"
-                processed_prayers.append({
-                    "date": f"{target_year}-{str(target_month).zfill(2)}-{str(day_entry['day']).zfill(2)}",
-                    "day_name": datetime.datetime.strptime(f"{target_year}-{target_month}-{day_entry['day']}", "%Y-%m-%d").strftime("%A"),
-                    "hijri_raw": hijri_raw,
-                    "hijri_full": hijri_full,
-                    "fajr": parse_epoch(day_entry["fajr"]),
-                    "syuruk": parse_epoch(syuruk_ts),
-                    "dhuha": parse_epoch(dhuha_ts),
-                    "dhuhr": parse_epoch(day_entry["dhuhr"]),
-                    "asr": parse_epoch(day_entry["asr"]),
-                    "maghrib": parse_epoch(day_entry["maghrib"]),
-                    "isha": parse_epoch(day_entry["isha"])
-                })
-        else:
-            url = f"https://api.aladhan.com/v1/calendar?latitude={lat}&longitude={lon}&method=2&month={target_month}&year={target_year}"
-            response = await http_client.get(url, timeout=15.0)
-            if response.status_code != 200:
-                return {"error": "The global prayer time API (Aladhan) is currently unreachable. Please try again later."}
-            raw_data = response.json()
-            for day_entry in raw_data.get("data", []):
-                timings = day_entry["timings"]
-                greg_date = day_entry["date"]["gregorian"]["date"]
-                parsed_greg = datetime.datetime.strptime(greg_date, "%d-%m-%Y").strftime("%Y-%m-%d")
-                def to_iso(t: str) -> str:
-                    h, m = map(int, t.split(":"))
-                    return datetime.datetime(int(parsed_greg[:4]), int(parsed_greg[5:7]), int(parsed_greg[8:10]), h - 8, m, tzinfo=datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                syuruk_str = timings["Sunrise"].split(" ")[0]
-                syuruk_time = datetime.datetime.strptime(syuruk_str, "%H:%M")
-                dhuha_time = (syuruk_time + datetime.timedelta(minutes=DHUHA_OFFSET_MINUTES)).strftime("%H:%M")
-                hijri_meta = day_entry["date"]["hijri"]
-                h_month_num = str(hijri_meta["month"]["number"]).zfill(2)
-                hijri_full = f"{hijri_meta['day']} {HIJRI_MONTHS.get(h_month_num, hijri_meta['month']['en'])} {hijri_meta['year']}"
-                processed_prayers.append({
-                    "date": parsed_greg,
-                    "day_name": day_entry["date"]["gregorian"]["weekday"]["en"],
-                    "hijri_raw": f"{hijri_meta['year']}-{h_month_num}-{str(hijri_meta['day']).zfill(2)}",
-                    "hijri_full": hijri_full,
-                    "fajr": to_iso(timings["Fajr"].split(" ")[0]),
-                    "syuruk": to_iso(syuruk_str),
-                    "dhuha": to_iso(dhuha_time),
-                    "dhuhr": to_iso(timings["Dhuhr"].split(" ")[0]),
-                    "asr": to_iso(timings["Asr"].split(" ")[0]),
-                    "maghrib": to_iso(timings["Maghrib"].split(" ")[0]),
-                    "isha": to_iso(timings["Isha"].split(" ")[0])
-                })
-    except httpx.RequestError as e:
-        logger.error("Network error fetching prayer times: %s", e)
+        async with EsolatClient() as client:
+            prayer_res = await client.get_prayer_times(
+                latitude=lat,
+                longitude=lon,
+                month=target_month,
+                year=target_year,
+            )
+            processed_prayers = [p.to_dict() for p in prayer_res.prayers]
+    except EsolatError as e:
+        logger.error("Error fetching prayer times: %s", e)
+        return {"error": f"Failed to fetch prayer times: {e}"}
+    except Exception as e:
+        logger.error("Unexpected error fetching prayer times: %s", e)
         return {"error": "Network error while fetching prayer times. Please try again later."}
 
     # Inject current_time_utc so agent can compare without a separate tool call
     result = {
         "current_time_utc": _get_current_time_utc()["current_time_utc"],
+        "zone": prayer_res.zone,
         "prayers": processed_prayers
     }
     _prayer_cache[cache_key] = result
@@ -393,42 +343,17 @@ async def get_yearly_islamic_events(
     if cache_key in _events_cache:
         return _events_cache[cache_key]
 
-    event_list = []
-
     try:
-        if local_route:
-            url = "https://www.e-solat.gov.my/index.php?r=esolatApi/islamicevent&type=all"
-            response = await http_client.get(url, timeout=15.0)
-            if response.status_code != 200:
-                return {"error": "The JAKIM Islamic events API is currently unreachable. Please try again later."}
-            raw_data = response.json()
-            for item in raw_data.get("event", []):
-                greg_date = item.get("tarikh_miladi", "")
-                if greg_date.startswith(str(target_year)):
-                    event_list.append({
-                        "event_name": item["hari_peristiwa"].replace("*", "").strip(),
-                        "gregorian_date": greg_date,
-                        "hijri_date": item["tarikh_hijri"]
-                    })
-        else:
-            url = f"https://api.aladhan.com/v1/islamicEvents?year={target_year}"
-            response = await http_client.get(url, timeout=15.0)
-            if response.status_code != 200:
-                return {"error": "The Aladhan Islamic events API is currently unreachable. Please try again later."}
-            raw_data = response.json()
-            for item in raw_data.get("data", []):
-                greg_date = datetime.datetime.strptime(item["gregorianDate"], "%d-%m-%Y").strftime("%Y-%m-%d")
-                event_name = (item.get("arahName") or item.get("label") or "").strip()
-                event_list.append({
-                    "event_name": event_name,
-                    "gregorian_date": greg_date,
-                    "hijri_date": f"{item['hijriYear']}-{str(item['hijriMonth']).zfill(2)}-{str(item['hijriDay']).zfill(2)}"
-                })
-    except httpx.RequestError as e:
+        async with EsolatClient() as client:
+            events = await client.get_islamic_events(year=target_year, is_malaysia=local_route)
+            event_list = [e.to_dict() for e in events]
+    except EsolatError as e:
+        logger.error("Error fetching Islamic events: %s", e)
+        return {"error": f"Failed to fetch Islamic events: {e}"}
+    except Exception as e:
         logger.error("Network error fetching Islamic events: %s", e)
         return {"error": "Network error while fetching Islamic events. Please try again later."}
 
-    event_list.sort(key=lambda x: x["gregorian_date"])
     _events_cache[cache_key] = event_list
     return event_list
 

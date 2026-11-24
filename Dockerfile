@@ -9,7 +9,8 @@ RUN apk add --no-cache gcc musl-dev libffi-dev && \
     "uvicorn[standard]" \
     httpx \
     "cachetools>=5.0" \
-    "python-jejakmasjid>=0.3.5" && \
+    "python-jejakmasjid>=0.3.5" \
+    "python-esolat>=0.1.0" && \
     apk del gcc musl-dev libffi-dev && \
     adduser -D -u 1000 appuser
 

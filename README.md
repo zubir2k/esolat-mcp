@@ -12,11 +12,11 @@ Gives AI assistants like **Claude Desktop** and **Claude Code** reliable, halluc
 
 ## Features
 
-- **Official JAKIM data** for Malaysia (via `Waktusolat.app API`)
+- **Official JAKIM & Global data** powered by `python-esolat` (WaktuSolat & Aladhan APIs)
 - **Dhuha time** automatically calculated (+28 minutes after Syuruk)
 - **Malay Hijri month names** (Muharram, Safar, etc.)
 - **Global fallback** using Aladhan API
-- **Nearest mosques/suraus** with Google Maps + Waze deep links
+- **Nearest mosques/suraus** powered by `python-jejakmasjid` with Google Maps + Waze deep links
 - **Yearly Islamic events** (Eid, etc.)
 - Dual mode: **Local (stdio)** + **Remote (Docker + secure HTTP)**
 - Health dashboard for upstream APIs
